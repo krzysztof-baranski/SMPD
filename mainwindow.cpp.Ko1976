@@ -1,0 +1,592 @@
+#include "mainwindow.h"
+#include "ui_mainwindow.h"
+
+#include <iostream>
+#include <fstream>
+
+#include <QImage>
+#include <QDebug>
+
+using namespace std;
+
+vector<Object> train;
+vector<Object> test;
+
+MainWindow::MainWindow(QWidget *parent) :
+    QMainWindow(parent),
+    ui(new Ui::MainWindow)
+{
+    ui->setupUi(this);
+    FSupdateButtonState();
+}
+
+MainWindow::~MainWindow()
+{
+    delete ui;
+}
+
+void MainWindow::updateDatabaseInfo()
+{
+    ui->FScomboBox->clear();
+    for(unsigned int i=1; i<=database.getNoFeatures(); ++i)
+        ui->FScomboBox->addItem(QString::number(i));
+    for(unsigned int i=1; i<=train.size(); i+=1)
+        ui->CcomboBoxK->addItem(QString::number(i));
+    ui->CcomboBoxClassifiers->clear();
+    ui->CcomboBoxClassifiers->addItem("NN");
+    ui->CcomboBoxClassifiers->addItem("kNN");
+    ui->CcomboBoxClassifiers->addItem("SR");
+    ui->CcomboBoxClassifiers->addItem("kSR");
+
+    ui->CplainTextEditTrainingPart->clear();
+    ui->CplainTextEditTrainingPart->insertPlainText("80");
+    ui->FStextBrowserDatabaseInfo->setText("noClass: " +  QString::number(database.getNoClass()));
+    ui->FStextBrowserDatabaseInfo->append("noObjects: "  +  QString::number(database.getNoObjects()));
+    ui->FStextBrowserDatabaseInfo->append("noFeatures: "  +  QString::number(database.getNoFeatures()));
+
+}
+
+void MainWindow::FSupdateButtonState(void)
+{
+    if(database.getNoObjects()==0)
+    {
+        FSsetButtonState(false);
+    }
+    else
+        FSsetButtonState(true);
+
+}
+
+
+void MainWindow::FSsetButtonState(bool state)
+{
+    ui->FScomboBox->setEnabled(state);
+    ui->FSpushButtonCompute->setEnabled(state);
+    ui->FSpushButtonSaveFile->setEnabled(state);
+    ui->FSradioButtonFisher->setEnabled(state);
+    ui->FSradioButtonSFS->setEnabled(state);
+}
+
+void MainWindow::on_FSpushButtonOpenFile_clicked()
+{
+    QString fileName = QFileDialog::getOpenFileName(this,tr("Open TextFile"), "", tr("Texts Files (Maple_Oak.txt)"));
+
+    if ( !database.load(fileName.toStdString()) )
+        QMessageBox::warning(this, "Warning", "File corrupted !!!");
+    else
+        QMessageBox::information(this, fileName, "File loaded !!!");
+
+    FSupdateButtonState();
+    updateDatabaseInfo();
+}
+
+void MainWindow::on_FSpushButtonCompute_clicked()
+{
+    int dimension = ui->FScomboBox->currentText().toInt();
+    ui->FStextBrowserDatabaseInfo->append("max_ind: "  +  QString::number(database.getNoClass()) + " " + QString::number(dimension));
+
+    using namespace boost::numeric::ublas;
+
+    if( ui->FSradioButtonFisher ->isChecked())
+    {
+        if (dimension == 1 && database.getNoClass() == 2)
+        {
+            float FLD = 0, tmp;
+            int max_ind = -1;
+
+            //std::map<std::string, int> classNames = database.getClassNames();
+            for (uint i = 0; i < database.getNoFeatures(); ++i)
+            {
+                std::map<std::string, float> classAverages;
+                std::map<std::string, float> classStds;
+
+                for (auto const &ob : database.getObjects())
+                {
+                    classAverages[ob.getClassName()] += ob.getFeatures()[i];
+                    classStds[ob.getClassName()] += ob.getFeatures()[i] * ob.getFeatures()[i];
+                }
+                std::for_each(database.getClassCounters().begin(), database.getClassCounters().end(), [&](const std::pair<std::string, int> &it)
+                {
+                    classAverages[it.first] /= it.second;
+                    classStds[it.first] = std::sqrt(classStds[it.first] / it.second - classAverages[it.first] * classAverages[it.first]);
+                }
+                );
+
+                tmp = std::abs(classAverages[ database.getClassNames()[0] ] - classAverages[database.getClassNames()[1]]) / (classStds[database.getClassNames()[0]] + classStds[database.getClassNames()[1]]);
+                if (tmp > FLD)
+                {
+                    FLD = tmp;
+                    max_ind = i;
+                }
+
+            }
+
+            ui->FStextBrowserDatabaseInfo->append("max_ind: "  +  QString::number(max_ind) + " " + QString::number(FLD));
+        }else if (dimension > 1 && database.getNoClass() == 2)
+        {
+            float FLD = 0, tmp;
+            int max_ind = -1;
+
+            for (uint i = 0; i < dimension-1; ++i)
+            {
+                map<string, float> classAverages;
+                map<string, float> classAveragesCount;
+                map<string, matrix<float>> classMatrix;
+
+                for (auto const &ob : database.getObjects())
+                {
+                    classAverages[ob.getClassName()] += ob.getFeatures()[i];
+                    classAveragesCount[ob.getClassName()] += 1;
+                }
+                for_each(database.getClassCounters().begin(), database.getClassCounters().end(), [&](const std::pair<std::string, int> &it)
+                {
+                    classAverages[it.first] /= it.second;
+                    classMatrix[it.first].resize(2,classAveragesCount[it.first],false);
+
+                }
+                );
+                map<string, float> counter;
+                for (auto const &ob : database.getObjects())
+                {
+                    classMatrix[ob.getClassName()](0,counter[ob.getClassName()]) = ob.getFeatures()[i]-classAverages[ob.getClassName()];
+                    counter[ob.getClassName()]++;
+                }
+
+                for (uint j = i+1; j < dimension; ++j)
+                {
+                    map<string, float> classAverages2;
+
+                    float distance;
+
+                    for (auto const &ob : database.getObjects())
+                    {
+                        classAverages2[ob.getClassName()] += ob.getFeatures()[j];
+                    }
+                    for_each(database.getClassCounters().begin(), database.getClassCounters().end(), [&](const pair<string, int> &it)
+                    {
+                        classAverages2[it.first] /= it.second;
+                    }
+                    );
+                    distance = sqrt(countDistance(classAverages[ database.getClassNames()[0] ] - classAverages2[ database.getClassNames()[0] ], classAverages[ database.getClassNames()[1] ] - classAverages2[ database.getClassNames()[1] ]));
+
+                    map<string, float> counter2;
+                    for (auto const &ob : database.getObjects())
+                    {
+                        classMatrix[ob.getClassName()](1,counter2[ob.getClassName()]) = ob.getFeatures()[j] - classAverages[ob.getClassName()];
+                        counter2[ob.getClassName()]++;
+                    }
+                    std::cout << database.getClassNames()[0] << "  " << classMatrix[ database.getClassNames()[0] ] << std::endl;
+
+                    map<string, matrix<float>> classMatrixS;
+
+                    for_each(database.getClassCounters().begin(), database.getClassCounters().end(), [&](const pair<string, int> &it)
+                    {
+                        classMatrixS[it.first] = prod(classMatrix[it.first],trans(classMatrix[it.first]));
+                    }
+                    );
+                    std::cout << database.getClassNames()[0] << "  " << classMatrixS[ database.getClassNames()[0] ] << endl;
+
+                    //                    tmp = abs(classAverages[ database.getClassNames()[0] ] - classAverages[database.getClassNames()[1]]) / (classStds[database.getClassNames()[0]] + classStds[database.getClassNames()[1]]);
+                    //                    if (tmp > FLD)
+                    //                    {
+
+                    //                        FLD = tmp;
+                    //                        max_ind = i;
+                    //                    }
+                }
+
+            }
+
+            ui->FStextBrowserDatabaseInfo->append("max_ind: "  +  QString::number(max_ind) + " " + QString::number(FLD));
+        }
+    }
+}
+
+void MainWindow::on_FSpushButtonSaveFile_clicked()
+{
+    QString fileName = QFileDialog::getSaveFileName(this,tr("Open TextFile"), "D:\\Users\\Krzysiu\\Documents\\Visual Studio 2015\\Projects\\SMPD\\SMPD\\Debug\\", tr("Texts Files (*.txt)"));
+
+    QMessageBox::information(this, "My File", fileName);
+    database.save(fileName.toStdString());
+}
+
+void MainWindow::on_PpushButtonSelectFolder_clicked()
+{
+}
+
+void MainWindow::on_CpushButtonOpenFile_clicked()
+{
+    QString fileName = QFileDialog::getOpenFileName(this,tr("Open TextFile"), "Maple_Oak.txt", tr("Texts Files (*.txt)"));
+
+    if ( !database.load(fileName.toStdString()) )
+        QMessageBox::warning(this, "Warning", "File corrupted !!!");
+    //    else
+    //        QMessageBox::information(this, fileName, "File loaded !!!");
+
+    FSupdateButtonState();
+    updateDatabaseInfo();
+}
+
+void MainWindow::on_CpushButtonSaveFile_clicked()
+{
+
+}
+
+void MainWindow::on_CpushButtonTrain_clicked()
+{
+    int trainPart = ui->CplainTextEditTrainingPart->toPlainText().toInt()*database.getObjects().size()/100;
+
+    train.clear();
+    test.clear();
+    int testpoints[trainPart];
+    for (uint i = 0; i< trainPart;)
+    {
+        int raund = rand()%database.getObjects().size() ;
+        if(!contains(raund,testpoints,i)){
+            testpoints[i] = raund;
+            ++i;
+        }
+    }
+
+    for (int i = 0 ; i < database.getObjects().size();i++)
+    {
+        if(contains(i,testpoints,trainPart)){
+            train.push_back(database.getObjects()[i]);
+        }else{
+            test.push_back(database.getObjects()[i]);
+        }
+    }
+
+    ui->CtextBrowser->append("test.size()  = " + QString::number(test.size() ));
+    ui->CtextBrowser->append("train.size() = " + QString::number(train.size()));
+    updateDatabaseInfo();
+}
+
+
+void MainWindow::on_CpushButtonExecute_clicked()
+{
+    string classifiers = ui->CcomboBoxClassifiers->currentText().toStdString();
+    ui->CtextBrowser->clear();
+    if(test.size() > 0){
+        if (classifiers == "NN" ){
+            NN();
+        } else if (classifiers == "kNN" ){
+            KNN();
+        }else if (classifiers == "SR" ){
+            SR();
+        }else if (classifiers == "kSR" ){
+            KSR();
+        }
+    }
+}
+
+void MainWindow::NN(){
+    int ok = 0;
+    int nOk = 0;
+    for (auto const &obTest : test){
+        float distance = 100;
+        float minDistance = 100;
+        string minObjectType;
+        for (auto const &obTrain : train){
+            distance = 0;
+            for (uint i = 0; i < database.getNoFeatures(); ++i){
+                distance += countDistance(obTest.getFeatures()[i] , obTrain.getFeatures()[i]);
+            }
+            distance = sqrt(distance);
+            if(minDistance > distance){
+                minDistance = distance;
+                minObjectType = obTrain.getClassName();
+            }
+        }
+        if(minObjectType == obTest.getClassName()){
+            ok++;
+        }else{
+            nOk++;
+        }
+
+    }
+    ui->CtextBrowser->append("OK = " + QString::number(ok));
+    ui->CtextBrowser->append("NOK = " + QString::number(nOk));
+    ui->CtextBrowser->append("% = " + QString::number(ok*100/test.size()));
+}
+
+void MainWindow::KNN(){
+    int k = ui->CcomboBoxK->currentText().toInt();
+    int ok = 0;
+    int nOk = 0;
+    for (auto const &obTest : test){
+        float distance = 0;
+        string minObjectType;
+        vector <pair<string, float>> distances;
+        for (auto const &obTrain : train){
+            distance = 0;
+            for (uint i = 0; i < database.getNoFeatures(); ++i){
+                distance += countDistance(obTest.getFeatures()[i] , obTrain.getFeatures()[i]);
+            }
+            distances.push_back(make_pair(obTrain.getClassName() ,sqrt(distance)));
+        }
+        sort(distances.begin(), distances.end(), [](pair<string, float> v1, pair<string, float> v2) { return v1.second < v2.second; });
+
+        int i = 0 ;
+        map<string, int> minDistance;
+
+        for (auto const &ob : distances)
+        {
+            minDistance[ob.first] += 1;
+            i++;
+            if(i == k ){
+                break;
+            }
+        }
+        string classDistance ;
+        int count = 0;
+        for (auto const &ob : minDistance)
+        {
+            if(count < ob.second){
+                count = ob.second;
+                classDistance = ob.first;
+            }
+        }
+        if(classDistance == obTest.getClassName()){
+            ok++;
+        }else{
+            nOk++;
+        }
+    }
+    ui->CtextBrowser->append("OK = " + QString::number(ok));
+    ui->CtextBrowser->append("NOK = " + QString::number(nOk));
+    ui->CtextBrowser->append("% = " + QString::number(ok*100/test.size()));
+}
+
+void MainWindow::SR(){
+    int ok = 0;
+    int nOk = 0;
+    map<string, vector<float>> classAverages;
+
+    for (uint i = 0; i < database.getNoFeatures(); ++i)
+    {
+        map<string, int> classCount;
+
+        for (auto const &ob : train)
+        {
+            if(!classAverages.count(ob.getClassName())){
+                for (uint i = 0; i < database.getNoFeatures(); ++i)
+                {
+                    classAverages[ob.getClassName()].push_back(0);
+                }
+            }
+
+            classAverages[ob.getClassName()][i] += ob.getFeatures()[i];
+            classCount[ob.getClassName()]++;
+        }
+        for ( const auto &it : classAverages )
+        {
+            classAverages[it.first][i] /= classCount[it.first];
+        }
+    }
+    for (auto const &ob : test){
+        map<string, float> classDistance;
+        float minDistance = 100;
+        string minObjectType;
+
+        for (uint i = 0; i < database.getNoFeatures(); ++i){
+            for ( const auto &it : classAverages )
+            {
+                classDistance[it.first] = countDistance(classAverages[it.first][i] , ob.getFeatures()[i]);
+            }
+        }
+        for ( const auto &it : classDistance )
+        {
+            classDistance[it.first] = sqrt(classDistance[it.first]);
+            if(minDistance > classDistance[it.first]){
+                minDistance = classDistance[it.first];
+                minObjectType = it.first;
+            }
+        }
+        if(minObjectType == ob.getClassName()){
+            ok++;
+        }else{
+            nOk++;
+        }
+    }
+    ui->CtextBrowser->append("OK = " + QString::number(ok));
+    ui->CtextBrowser->append("NOK = " + QString::number(nOk));
+    ui->CtextBrowser->append("% = " + QString::number(ok*100/test.size()));
+}
+
+void MainWindow::KSR(){
+    int ok = 0;
+    int nOk = 0;
+    int k = ui->CcomboBoxK->currentText().toInt();
+
+    map<string, vector<Object>> classTrain;
+    map<string,map<int, vector<Object>>> TrainGroup;
+    map<string, vector<Object>> classAverages;
+
+    for (auto const &ob : train){
+        classTrain[ob.getClassName()].push_back(ob);
+    }
+    for ( const auto &it : classTrain ){
+        map<int, Object> classAvgOld;
+        for(int w = 0 ; w < 100 ;w++){
+            map<int, vector<Object>> classTrainGroup;
+            vector<Object> classTrainK;
+            if(classAvgOld.size()==0){
+                classTrainK = randKElements(it.second,k);
+            }else{
+                for ( const auto &i : classAvgOld )
+                    classTrainK.push_back(i.second);
+            }
+            float distance = 100;
+            float minDistance = 100;
+            for (auto const &ob : it.second){
+                int minObject ;
+                int count = 0;
+                for (auto const &obTrain : classTrainK){
+                    for (uint i = 0; i < database.getNoFeatures(); ++i){
+                        distance += countDistance(ob.getFeatures()[i] , obTrain.getFeatures()[i]);
+                    }
+                    distance = sqrt(distance);
+                    if(minDistance > distance){
+                        minDistance = distance;
+                        minObject = count;
+                    }
+                    count++;
+                }
+                classTrainGroup[minObject].push_back(ob);
+            }
+            int comp = 0;
+            for (const auto &it2 : classTrainGroup)
+            {
+                vector<float> avgOb ;
+                for (uint i = 0; i < database.getNoFeatures(); ++i){
+                    float avg = 0;
+                    for (auto const &ob : it2.second)
+                    {
+                        avg+= ob.getFeatures()[i];
+                    }
+                    avgOb.push_back(avg/it2.second.size());
+                }
+                Object temp = Object(it.first,avgOb);
+                if(!classAvgOld.count(it2.first)){
+                    classAvgOld.insert ( pair<int,Object>(it2.first,temp) );
+                    comp++;
+                }else if(!compare(temp,classAvgOld.find(it2.first)->second )){
+                    classAvgOld.erase(it2.first);
+                    classAvgOld.insert ( pair<int,Object>(it2.first,temp) );
+                    comp++;
+                }
+            }
+            //            std::cout << it.first << "  " <<comp << " +++++ " << classAvgOld.size() << "\n" ;
+            if(comp==0){
+                TrainGroup[it.first] = classTrainGroup;
+                break;
+            }
+        }
+    }
+
+    for ( const auto &it : TrainGroup){
+        for (const auto &it2 : it.second)
+        {
+            vector<float> avgOb ;
+            for (uint i = 0; i < database.getNoFeatures(); ++i){
+                float avg = 0;
+                for (auto const &ob : it2.second)
+                {
+                    avg+= ob.getFeatures()[i];
+                }
+                avgOb.push_back(avg/it2.second.size());
+            }
+            classAverages[it.first].push_back(Object(it.first,avgOb));
+        }
+    }
+
+    for (auto const &ob : test){
+        map<string, float> classDistance;
+        float minDistance = 100;
+        string minObjectType;
+
+
+        for ( const auto &it : classAverages){
+            float distance = 0;
+            for (auto const &ob2 : it.second){
+                for (uint i = 0; i < database.getNoFeatures(); ++i){
+                    distance = countDistance(ob2.getFeatures()[i] , ob.getFeatures()[i]);
+                }
+                distance = sqrt(distance);
+                if(minDistance > distance){
+                    minDistance = distance;
+                    minObjectType = it.first;
+                }
+            }
+        }
+        if(minObjectType == ob.getClassName()){
+            ok++;
+        }else{
+            nOk++;
+        }
+    }
+    ui->CtextBrowser->append("OK = " + QString::number(ok));
+    ui->CtextBrowser->append("NOK = " + QString::number(nOk));
+    ui->CtextBrowser->append("% = " + QString::number(ok*100/test.size()));
+}
+
+vector<Object> MainWindow::randKElements(vector<Object> tab, int k){
+    vector<Object> elements;
+    int count = 0;
+    if(tab.size() >= k){
+        count = k;
+    }else {
+        count = tab.size();
+    }
+    int testpoints[count];
+    for (uint i = 0; i< count;)
+    {
+        int raund = rand()%tab.size() ;
+        if(!contains(raund,testpoints,i)){
+            testpoints[i] = raund;
+            ++i;
+        }
+    }
+
+    for (int i = 0 ; i < tab.size() ; i++)
+    {
+        if(contains(i,testpoints,count)){
+            elements.push_back(tab[i]);
+        }
+    }
+    return elements;
+}
+
+boolean MainWindow::contains(int i,int tab[],int count)
+{
+    int j = 0 ;
+    do
+    {
+        if( tab[ j ] == i )
+            return true;
+
+        j++;
+    } while( j < count );
+    return false;
+}
+
+boolean MainWindow::compare(const Object &i,const Object &j)
+{
+    int count = 0;
+    for (uint q = 0; q < database.getNoFeatures(); ++q){
+        if(!(i.getFeatures()[q] == j.getFeatures()[q])){
+            count++;
+        }
+    }
+    if(count == 0){
+        return true;
+    }
+    return false;
+}
+
+float MainWindow::countDistance(const float a,const float b)
+{
+    return (a-b)*(a-b);
+}
+

@@ -1,0 +1,804 @@
+#include "mainwindow.h"
+#include "ui_mainwindow.h"
+
+#include <iostream>
+#include <fstream>
+#include <math.h>
+
+#include <QtWidgets>
+#include <QImage>
+#include <QDebug>
+
+using namespace std;
+namespace bnu = boost::numeric::ublas;
+
+vector<Object> trainSet;
+vector<Object> testSet;
+vector<int> maxFLDPoint;
+vector<int> tmpMaxFLDPoint;
+float maxFLD = 0;
+
+MainWindow::MainWindow(QWidget *parent) :
+    QMainWindow(parent),
+    ui(new Ui::MainWindow)
+{
+    ui->setupUi(this);
+    FSupdateButtonState();
+}
+
+MainWindow::~MainWindow()
+{
+    delete ui;
+}
+
+void MainWindow::updateDatabaseInfo()
+{
+    ui->FScomboBox->clear();
+    for(unsigned int i=1; i<=database.getNoFeatures(); ++i)
+        ui->FScomboBox->addItem(QString::number(i));
+    ui->CcomboBoxClassifiers->clear();
+    ui->CcomboBoxClassifiers->addItem("NN");
+    ui->CcomboBoxClassifiers->addItem("kNN");
+    ui->CcomboBoxClassifiers->addItem("NM");
+    ui->CcomboBoxClassifiers->addItem("kNM");
+
+    ui->CplainTextEditTrainingPart->clear();
+    ui->CplainTextEditTrainingPart->insertPlainText("80");
+    ui->FStextBrowserDatabaseInfo->setText("noClass: " +  QString::number(database.getNoClass()));
+    ui->FStextBrowserDatabaseInfo->append("noObjects: "  +  QString::number(database.getNoObjects()));
+    ui->FStextBrowserDatabaseInfo->append("noFeatures: "  +  QString::number(database.getNoFeatures()));
+
+}
+
+void MainWindow::FSupdateButtonState(void)
+{
+    if(database.getNoObjects()==0)
+    {
+        FSsetButtonState(false);
+    }
+    else
+        FSsetButtonState(true);
+
+}
+
+
+void MainWindow::FSsetButtonState(bool state)
+{
+    ui->FScomboBox->setEnabled(state);
+    ui->FSpushButtonCompute->setEnabled(state);
+    ui->FSpushButtonSaveFile->setEnabled(state);
+    ui->FSradioButtonFisher->setEnabled(state);
+    ui->FSradioButtonSFS->setEnabled(state);
+}
+
+void MainWindow::on_FSpushButtonOpenFile_clicked()
+{
+    QString fileName = QFileDialog::getOpenFileName(this,tr("Open TextFile"), "", tr("Texts Files (Maple_Oak.txt)"));
+
+    if ( !database.load(fileName.toStdString()) )
+        QMessageBox::warning(this, "Warning", "File corrupted !!!");
+    else
+        //QMessageBox::information(this, fileName, "File loaded !!!");
+
+    FSupdateButtonState();
+    updateDatabaseInfo();
+}
+
+void MainWindow::on_FSpushButtonCompute_clicked()
+{
+    int dimension = ui->FScomboBox->currentText().toInt();
+//    ui->FStextBrowserDatabaseInfo->append("max_ind: "  +  QString::number(database.getNoClass()) + " " + QString::number(dimension));
+
+
+    if( ui->FSradioButtonFisher ->isChecked())
+    {
+        if (dimension == 1 && database.getNoClass() == 2)
+        {
+            calculateFisher();
+
+        } else if (dimension > 1 && database.getNoClass() == 2)
+        {
+            map<string, bnu::matrix<float>> XiAi; // mapa zawierająca dwie macierze Xa*Ma i Xb*Mb
+            map<string, bnu::matrix<float>> classAverages; // średnie Ma i Mb
+
+            for_each(database.getClassCounters().begin(), database.getClassCounters().end(), [&](const pair<string, int> &it)
+            {
+                // rozmiar macierzy ilosc cech X wielkosc zbioru cech (np. ilosc Acer'ow)
+                XiAi[it.first].resize(dimension, it.second, false);
+                classAverages[it.first].resize(1, dimension, false);
+            });
+
+            maxFLDPoint.clear();
+            tmpMaxFLDPoint.clear();
+            // wypelnia wektory zerami, ustawia rozmiar na dimension
+            for (uint k = 0; k < dimension; k++){
+                cout << k << endl ;
+                maxFLDPoint.push_back(0);
+                tmpMaxFLDPoint.push_back(0);
+            }
+            maxFLD = 0;
+            calculateFisher(XiAi, classAverages, -1, 0, --dimension);
+            ui->FStextBrowserDatabaseInfo->append("MaxFLD: "  +  QString::number(maxFLD));
+
+            for (uint k = 0; k < maxFLDPoint.size(); k++) {
+                ui->FStextBrowserDatabaseInfo->append("k" + QString::number(k) + ": "  + QString::number(maxFLDPoint[k]));
+            }
+        }
+    }
+    if( ui->FSradioButtonSFS->isChecked())
+    {
+        if (dimension == 1 && database.getNoClass() == 2)
+        {
+            calculateFisher();
+
+        } else {
+            int point = calculateFisher(); // nr cechy z najwiekszym wsp. Fischera
+
+            map<string, bnu::matrix<float>> classMatrixXiMi; // Xa * Ma
+            map<string, bnu::matrix<float>> classAverages;
+            maxFLDPoint.clear();
+            for (uint k = 0; k < dimension; k++){
+                maxFLDPoint.push_back(-1);
+            }
+            maxFLDPoint[0] = point;
+
+            for (uint j = 1; j < dimension; ++j)
+            {
+                maxFLD = 0;
+
+                for_each(database.getClassCounters().begin(), database.getClassCounters().end(), [&](const pair<string, int> &it)
+                {
+                    classMatrixXiMi[it.first].resize(j+1, it.second, true);
+//                    cout << "matrix " << classMatrixXiMi[it.first] << endl;
+                    classAverages[it.first].resize(1, j+1, true);
+                }
+                );
+
+                map<string, float> tmpClassAverages;
+                for (auto const &ob : database.getObjects())
+                {
+                    tmpClassAverages[ob.getClassName()] += ob.getFeatures()[point];
+                }
+                for_each(database.getClassCounters().begin(), database.getClassCounters().end(), [&](const pair<string, int> &it)
+                {
+                    classAverages[it.first](0, j-1) = tmpClassAverages[it.first] / it.second;
+                }
+                );
+                map<string, float> counter;
+                // uzupelniamy 1 wiersz macierzy dla cechy z najlepszym wspolczynnikiem fishera
+                for (auto const &ob : database.getObjects())
+                {
+                    classMatrixXiMi[ob.getClassName()](j-1, counter[ob.getClassName()]) =
+                            ob.getFeatures()[point] - classAverages[ob.getClassName()](0, j - 1);
+                    counter[ob.getClassName()]++;
+                }
+
+                point = calculateSFS( classMatrixXiMi, classAverages, j);
+                maxFLDPoint[j] = point;
+            }
+            ui->FStextBrowserDatabaseInfo->append("MaxFLD: "  +  QString::number(maxFLD));
+
+            for (uint k = 0; k < maxFLDPoint.size(); k++){
+                ui->FStextBrowserDatabaseInfo->append("k" + QString::number(k)+": "  +  QString::number(maxFLDPoint[k]));
+            }
+        }
+    }
+}
+float MainWindow::calculateFisher() {
+
+    float FLD = 0, tmp;
+    int max_ind = -1;
+
+    for (uint i = 0; i < database.getNoFeatures(); ++i)
+    {
+        map<std::string, float> classAverages;
+        map<std::string, float> classStds;
+
+        for (auto const &ob : database.getObjects())
+        {
+            classAverages[ob.getClassName()] += ob.getFeatures()[i];
+            classStds[ob.getClassName()] += ob.getFeatures()[i] * ob.getFeatures()[i];
+        }
+        std::for_each(database.getClassCounters().begin(), database.getClassCounters().end(), [&](const pair<string, int> &it)
+        {
+            classAverages[it.first] /= it.second;
+            classStds[it.first] = sqrt(classStds[it.first] / it.second - classAverages[it.first] * classAverages[it.first]);
+        }
+        );
+
+        tmp = std::abs(classAverages[ database.getClassNames()[0] ] - classAverages[database.getClassNames()[1]]) / (classStds[database.getClassNames()[0]] + classStds[database.getClassNames()[1]]);
+        if (tmp > FLD)
+        {
+            FLD = tmp;
+            max_ind = i;
+        }
+
+    }
+//    ui->FStextBrowserDatabaseInfo->append("max_ind: " + QString::number(max_ind) + " " + QString::number(FLD));
+    return max_ind;
+}
+float MainWindow::calculateSFS(map<string, bnu::matrix<float>>& XiBi, map<string, bnu::matrix<float>>& averages , int rowNumber){
+
+    int maxSFS;
+
+    for (uint j = 0; j < database.getNoFeatures(); ++j)
+    {
+        cout<< j << endl;
+        if(std::find(maxFLDPoint.begin(), maxFLDPoint.end(), j) != maxFLDPoint.end()) {
+            continue;
+        }
+        map<string, float> classAverages;
+        for (auto const &ob : database.getObjects())
+        {
+            classAverages[ob.getClassName()] += ob.getFeatures()[j];
+        }
+        for_each(database.getClassCounters().begin(), database.getClassCounters().end(), [&](const pair<string, int> &it)
+        {
+            averages[it.first](0, rowNumber) = classAverages[it.first] / it.second;
+        }
+        );
+        map<string, float> counter;
+        for (auto const &ob : database.getObjects())
+        {
+//            XiBi = Sa lub Sb
+            XiBi[ob.getClassName()](rowNumber, counter[ob.getClassName()]) = ob.getFeatures()[j] - averages[ob.getClassName()](0, rowNumber)  ;
+            counter[ob.getClassName()]++;
+        }
+        map<string,bnu::matrix<float>> classMatrixXiMi;
+        map<string, float> classMatrixDet;
+        float distance = 0, tmp;
+        for_each(database.getClassCounters().begin(), database.getClassCounters().end(), [&](const pair<string, int> &it)
+        {
+            classMatrixXiMi[it.first].resize(rowNumber, rowNumber, false);
+            classMatrixXiMi[it.first] = bnu::prod(XiBi[it.first], trans( XiBi[it.first] )   );
+            classMatrixDet[it.first] = determinant( classMatrixXiMi[it.first] );
+            classMatrixXiMi.clear();
+        }
+        );
+        for (uint k = 0; k < averages[database.getClassNames()[0]].size2() ; ++k)
+        {
+            distance += (averages[ database.getClassNames()[1]](0, k) - averages[ database.getClassNames()[0]](0, k))*
+                    (averages[ database.getClassNames()[1]](0, k) - averages[ database.getClassNames()[0]](0, k));
+        }
+        distance = sqrt(distance);
+        tmp = distance / (classMatrixDet[database.getClassNames()[0]]+classMatrixDet[database.getClassNames()[1]]);
+
+        cout << distance << "  " << tmp <<"  "<<(classMatrixDet[database.getClassNames()[0]]+classMatrixDet[database.getClassNames()[1]])<<endl;
+//        cout<<XiBi[database.getClassNames()[0]] <<endl;
+
+        if(tmp > maxFLD){
+            cout<<j <<endl;
+
+            maxFLD = tmp;
+            maxSFS = j;
+        }
+    }
+
+    return maxSFS;
+}
+                             // macierze Sa i Sb, macierz srednich, licznik dla pętli, licznik dla wiersza macierzy, odliczanie ile zaglebien jeszcze
+void MainWindow::calculateFisher(map<string, bnu::matrix<float>>& XiAi, map<string, bnu::matrix<float>>& averages , int loopCounter, int rowCounter, int howManyDig){
+
+    int i = loopCounter;
+    int rc = rowCounter;
+    int dimension = howManyDig;
+    int iterNumber = database.getNoFeatures()-dimension;
+
+    for (uint j = i+1; j < iterNumber; ++j)
+    {
+        tmpMaxFLDPoint[rc] = j;
+        map<string, float> classAverages;
+        for (auto const &ob : database.getObjects())
+        {
+            classAverages[ob.getClassName()] += ob.getFeatures()[j];
+        }
+        for_each(database.getClassCounters().begin(), database.getClassCounters().end(), [&](const pair<string, int> &it)
+        {
+            averages[it.first](0, rc) = classAverages[it.first] / it.second;
+        }
+        );
+        map<string, float> counter;
+        // uzupelnia sie Sa, Sb (wartosc cechy - srednia)
+        for (auto const &ob : database.getObjects())
+        {
+            XiAi[ob.getClassName()](rc, counter[ob.getClassName()]) = ob.getFeatures()[j] - averages[ob.getClassName()](0, rc)   ;
+            counter[ob.getClassName()]++;
+        }
+        if (dimension < 1) {
+            map<string,bnu::matrix<float>> classMatrixXiMi;
+            map<string, float> classMatrixDet;
+            float distance = 0, tmp;
+
+            for_each(database.getClassCounters().begin(), database.getClassCounters().end(), [&](const pair<string, int> &it)
+            {
+                classMatrixXiMi[it.first].resize(rc, rc, false);
+                classMatrixXiMi[it.first] = bnu::prod(XiAi[it.first], trans( XiAi[it.first] ));
+                classMatrixDet[it.first] = determinant( classMatrixXiMi[it.first] );
+                classMatrixXiMi.clear();
+            }
+            );
+            for (uint k = 0; k < averages[database.getClassNames()[0]].size2() ; ++k)
+            {
+                distance += (averages[ database.getClassNames()[1]](0, k) - averages[ database.getClassNames()[0]](0, k)) *
+                        (averages[ database.getClassNames()[1]](0, k) - averages[ database.getClassNames()[0]](0, k));
+            }
+            distance = sqrt(distance);
+//            cout << distance << endl;
+
+            tmp = distance / (classMatrixDet[database.getClassNames()[0]]+classMatrixDet[database.getClassNames()[1]]);
+            cout << "dist" << distance << " tmp " << tmp <<" sumadet "<<(classMatrixDet[database.getClassNames()[0]]+classMatrixDet[database.getClassNames()[1]])<<endl;
+//            cout << tmp << endl;
+            if(tmp > maxFLD){
+                maxFLD = tmp; // maxFLD to wspolczynnik Fischera
+                // tmpMaxFLDPoint przechowuje aktualnie liczone numery cech
+                for (uint k = 0; k < tmpMaxFLDPoint.size(); k++){
+                    maxFLDPoint[k] = tmpMaxFLDPoint[k];
+                }
+            }
+
+        } else {
+            calculateFisher(XiAi, averages, j, rc + 1, dimension - 1);
+        }
+    }
+}
+
+
+float MainWindow::determinant_sign(const bnu::permutation_matrix<size_t>& pm)
+{
+    float pm_sign=1;
+    std::size_t size = pm.size();
+    for (std::size_t i = 0; i < size; ++i)
+        if (i != pm(i))
+            pm_sign *= -1.0; // swap_rows would swap a pair of rows here, so we change sign
+    return pm_sign;
+}
+
+float MainWindow::determinant(bnu::matrix<float>& m ) {
+    bnu::permutation_matrix<std::size_t> pm(m.size1());
+    float det = 1;
+
+    if( bnu::lu_factorize(m,pm) ) {
+        det = 0.0;
+    } else {
+        for(int i = 0; i < m.size1(); i++)
+            det *= m(i,i); // multiply by elements on diagonal
+        det = det * determinant_sign( pm );
+    }
+    return det;
+}
+
+void MainWindow::on_FSpushButtonSaveFile_clicked()
+{
+    QString fileName = QFileDialog::getSaveFileName(this,tr("Open TextFile"), "D:\\Users\\Krzysiu\\Documents\\Visual Studio 2015\\Projects\\SMPD\\SMPD\\Debug\\", tr("Texts Files (*.txt)"));
+
+    QMessageBox::information(this, "My File", fileName);
+    database.save(fileName.toStdString());
+}
+
+void MainWindow::on_PpushButtonSelectFolder_clicked()
+{
+}
+
+void MainWindow::on_CpushButtonOpenFile_clicked()
+{
+    QString fileName = QFileDialog::getOpenFileName(this,tr("Open TextFile"), "Maple_Oak.txt", tr("Texts Files (*.txt)"));
+
+    if ( !database.load(fileName.toStdString()) )
+        QMessageBox::warning(this, "Warning", "File corrupted !!!");
+    //    else
+    //        QMessageBox::information(this, fileName, "File loaded !!!");
+
+    FSupdateButtonState();
+    updateDatabaseInfo();
+}
+
+void MainWindow::on_CpushButtonSaveFile_clicked()
+{
+
+}
+
+void MainWindow::on_CpushButtonTrain_clicked()
+{
+    int partValue=ui->CplainTextEditTrainingPart->toPlainText().toInt(); //wartość pobrana z formularza, do dzielenia setu
+       if(partValue>=100 || partValue<=0){
+           ui->CtextBrowser->append("Błąd");
+       }
+       else{
+           ui->CtextBrowser->append("Part: "+QString::number(partValue));
+           testSet.clear();
+           trainSet.clear();
+           shuffledObjects.clear();
+       //    //qDebug() << objects.size();
+           int trainPart=(database.getObjects().size()*partValue)/100;
+       //    //qDebug() << trainPart;
+
+           for(int i=0; i< database.getObjects().size(); i++)
+           {
+                shuffledObjects.push_back(database.getObjects()[i]);
+           }
+       //        //std::copy( objects.begin(), objects.end(), shuffledObjects.begin());
+           std::random_device rd;
+           std::default_random_engine engine(rd());
+           std::shuffle(std::begin(shuffledObjects), std::end(shuffledObjects), engine);
+       //    std::copy( shuffledObjects.begin(), shuffledObjects.begin()+trainPart, trainSet.begin());
+           for(int i=0; i< trainPart; i++)
+           {
+                   trainSet.push_back(shuffledObjects[i]);
+           }
+
+       //    qDebug() << "trainset"<<trainSet.size();
+       //    std::copy( shuffledObjects.begin()+trainPart, shuffledObjects.end(), testSet.begin());
+           for(int i=trainPart; i< shuffledObjects.size(); i++)
+           {
+                   testSet.push_back(shuffledObjects[i]);
+           }
+
+           ui->CtextBrowser->append("TrainSet: "+QString::number(trainSet.size()));
+           ui->CtextBrowser->append("TestSet: "+QString::number(testSet.size()));
+       //    qDebug() << "trainset"<<testSet.size();
+       }
+}
+
+
+void MainWindow::on_CpushButtonExecute_clicked()
+{
+    std::string classifier=ui->CcomboBoxClassifiers->currentText().toStdString();
+       //qDebug() << database.getNoFeatures();
+       if(classifier=="NN"){
+           computeNN();
+       }
+       else if(classifier=="NM"){
+            computeNM();
+       }
+       else if(classifier=="kNN"){
+           int k=ui->CcomboBoxK->currentText().toInt();
+           computekNN(k);
+       }
+       else if(classifier=="kNM"){
+       }
+}
+
+float MainWindow::computeNN(){
+    int correct=0,incorrect=0;
+    for (auto &test : testSet)
+        {
+            float minDist=10000;
+            std::string cClass="";
+            for (auto &train : trainSet)
+                {
+                    float distance=0;
+                    for(uint i=0;i<database.getNoFeatures();i++){
+                        distance+=(test.getFeatures()[i]-train.getFeatures()[i])*(test.getFeatures()[i]-train.getFeatures()[i]);
+                    }
+                    distance=sqrt(distance);
+                    if(distance<minDist){
+                        minDist=distance;
+                        cClass=train.getClassName();
+                    }
+                }
+            if(cClass==test.getClassName()){
+                correct++;
+            }
+            else{
+                incorrect++;
+            }
+        }
+
+     float result = float(correct) / float(testSet.size())*100;
+     ui->CtextBrowser->append("Correct: "+QString::number(correct));
+     ui->CtextBrowser->append("Incorrect: "+QString::number(incorrect));
+     ui->CtextBrowser->append("Classifier efficiency: "+QString::number(result));
+
+    return result;
+}
+
+float MainWindow::computekNN(int k){
+    int correct=0,incorrect=0;
+     for (auto &test : testSet){
+         float distance = 0;
+         std::vector<std::pair<std::string,float>> distances;
+         std::string cClass="";
+         for (auto &train : trainSet)
+             {
+                 distance=0;
+                 for(uint i=0;i<database.getNoFeatures();i++){
+                     distance+=(test.getFeatures()[i]-train.getFeatures()[i])*(test.getFeatures()[i]-train.getFeatures()[i]);
+                 }
+                 distances.push_back(make_pair(train.getClassName(), sqrt(distance)));
+             }
+         sort(distances.begin(),distances.end(),[](std::pair<std::string, float> v1, std::pair<std::string, float> v2) { return v1.second < v2.second; });
+
+         std::map<std::string,int> minDist;
+         int i=0;
+
+         for(auto const &it:distances){
+             minDist[it.first]+=1;
+             i++;
+             if(i==k)
+                 break;
+         }
+             int coutner=0;
+             for(auto const &it:minDist){
+                 if(coutner<it.second){
+                     coutner=it.second;
+                     cClass=it.first;
+                 }
+             }
+             if(cClass==test.getClassName()){
+                 correct++;
+             }
+             else{
+                 incorrect++;
+             }
+
+     }
+
+     float result = float(correct) / float(testSet.size())*100;
+     ui->CtextBrowser->append("Correct: "+QString::number(correct));
+     ui->CtextBrowser->append("Incorrect: "+QString::number(incorrect));
+     ui->CtextBrowser->append("Classifier efficiency: "+QString::number(result));
+
+    return result;
+}
+
+float MainWindow::computeNM(){
+    int correct=0,incorrect=0;
+    int counter=0;
+    std::map<std::string, float[64]> avgs;
+    for(uint i=0;i<database.getNoFeatures();i++){
+       std::map<std::string, int> classCount;
+        for (const auto &train : trainSet){
+            avgs[train.getClassName()][i]+=train.getFeatures()[i];
+            classCount[train.getClassName()]++;
+            counter++;
+        }
+        for(const auto &it:avgs){
+            avgs[it.first][i]/=classCount[it.first];
+            counter++;
+        }
+    }
+    for (auto &test : testSet){
+        std::map<std::string,float> distance;
+        float minDist=1000;
+        std::string cClass;
+        for(uint i=0;i<database.getNoFeatures();i++){
+            for(const auto &it:avgs){
+                distance[it.first]=(avgs[it.first][i]-test.getFeatures()[i])*(avgs[it.first][i]-test.getFeatures()[i]);
+                counter++;
+            }
+        }
+        for(const auto &it:distance){
+            counter++;
+            distance[it.first]=sqrt(distance[it.first]);
+            if(minDist>distance[it.first]){
+                minDist=distance[it.first];
+                cClass=it.first;
+            }
+        }
+        if(cClass==test.getClassName()){
+            correct++;
+        }
+        else{
+            incorrect++;
+        }
+    }
+
+    float result = float(correct) / float(testSet.size())*100;
+    ui->CtextBrowser->append("Correct: "+QString::number(correct));
+    ui->CtextBrowser->append("Incorrect: "+QString::number(incorrect));
+    ui->CtextBrowser->append("Classifier efficiency: "+QString::number(result));
+
+   return result;
+}
+
+//vector<Object> MainWindow::randKElements(vector<Object> tab, int k){
+//    vector<Object> elements;
+//    int count = 0;
+//    if(tab.size() >= k){
+//        count = k;
+//    }else {
+//        count = tab.size();
+//    }
+//    int testpoints[count];
+//    for (uint i = 0; i< count;)
+//    {
+//        int raund = rand()%tab.size() ;
+//        if(!contains(raund,testpoints,i)){
+//            testpoints[i] = raund;
+//            ++i;
+//        }
+//    }
+
+//    for (int i = 0 ; i < tab.size() ; i++)
+//    {
+//        if(contains(i,testpoints,count)){
+//            elements.push_back(tab[i]);
+//        }
+//    }
+//    return elements;
+//}
+
+boolean MainWindow::contains(int i,int tab[],int count)
+{
+    int j = 0 ;
+    do
+    {
+        if( tab[ j ] == i )
+            return true;
+
+        j++;
+    } while( j < count );
+    return false;
+}
+
+//boolean MainWindow::compare(const Object &i,const Object &j)
+//{
+//    int count = 0;
+//    for (uint q = 0; q < database.getNoFeatures(); ++q){
+//        if(!(i.getFeatures()[q] == j.getFeatures()[q])){
+//            count++;
+//        }
+//    }
+//    if(count == 0){
+//        return true;
+//    }
+//    return false;
+//}
+
+//float MainWindow::countDistance(const float a,const float b)
+//{
+//    return (a*a)+(b*b);
+//}
+
+
+void MainWindow::on_pushButton_clicked()
+{
+    int bootstrapIters = ui->CplainTextEditBootstrapIters->toPlainText().toInt();
+    string classifiers = ui->CcomboBoxClassifiers->currentText().toStdString();
+    std::vector<float> bootstrapResults;
+    float averageResult = 0.0;
+    ui->CtextBrowser->clear();
+
+    for (uint i=0;i<bootstrapIters; i++) {
+
+        trainSet.clear();
+        testSet.clear();
+        int testpoints[database.getNoObjects()];
+        for (uint i = 0; i< database.getNoObjects(); i++)
+        {
+            int raund = rand()%database.getObjects().size();
+            cout << "round " << raund << endl;
+            testpoints[i] = raund;
+        }
+
+        for (int i =0; i<database.getNoObjects(); i++) {
+            if (!contains(i, testpoints, database.getNoObjects())) {
+                trainSet.push_back(database.getObjects()[i]);
+            }
+            else {
+                testSet.push_back(database.getObjects()[i]);
+            }
+        }
+
+        if (classifiers == "NN" ){
+            bootstrapResults.push_back(computeNN());
+        } else if (classifiers == "kNN" ){
+            int k=ui->CcomboBoxK->currentText().toInt();
+            bootstrapResults.push_back(computekNN(k));
+        }else if (classifiers == "NM" ){
+            bootstrapResults.push_back(computeNM());
+        }
+    }
+    averageResult = accumulate(bootstrapResults.begin(), bootstrapResults.end(), 0.0)/bootstrapResults.size();
+    cout << "Avarage results: " << averageResult << endl;
+
+    ui->CtextBrowser->append("Average results: " + QString::number(averageResult));
+    updateDatabaseInfo();
+}
+
+void MainWindow::on_CpushButtonClear_clicked()
+{
+    ui->CtextBrowser->clear();
+}
+
+void MainWindow::on_pushButton_2_clicked()
+{
+    ui->CtextBrowser->clear();
+}
+
+void MainWindow::on_pushButton_3_clicked()
+{
+    std::string path = "D:/SMPD/100 leaves plant species/data short/Acer_Capillipes/acer_capillipes_01.ab.jpg";
+    int thresh = 100;
+    cv::Mat canny_output;
+    std::vector<cv::Vec4i> hierarchy;
+    std::vector<std::vector<cv::Point> > contours;
+    std::vector<cv::Point> allPoints;
+
+    cv::Mat image = cv::imread(path.c_str());
+
+    cv::cvtColor(image, image, CV_BGR2RGB);
+
+    QGraphicsScene* scene = new QGraphicsScene();
+
+    ui->PgraphicsView->setScene(scene);
+    QGraphicsPixmapItem* item = new QGraphicsPixmapItem(
+        QPixmap::fromImage(QImage(
+            image.data, image.cols, image.rows, image.step, QImage::Format_RGB888)
+                .scaled(256, 190, Qt::KeepAspectRatio)));
+    scene->addItem(item);
+
+    ui->PgraphicsView->show();
+
+
+    /// Detect edges using canny
+    cv::Canny(image, canny_output, thresh, thresh*2, 3 );
+    /// Find contours
+    cv::findContours( canny_output, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0) );
+
+    /// Draw contours
+    cv::Mat drawing = cv::Mat::zeros( canny_output.size(), CV_8UC3 );
+    for( int i = 0; i< contours.size(); i++ )
+    {
+                               // blue, green, red, [alpha]
+       cv::Scalar color = cv::Scalar(0, 0, 255);
+       //image, contours, contourIdx, color, thickness, lineType, hierarchy, maxLevel, offset
+       cv::drawContours( drawing, contours, i, color, 1, 8, hierarchy, 0, cv::Point() );
+      // cout << "contours: " << contours[i]<< endl;
+    }
+
+    scene = new QGraphicsScene();
+    ui->PgraphicsViewEdge->setScene(scene);
+    item = new QGraphicsPixmapItem(
+     QPixmap::fromImage(QImage(
+         drawing.data, drawing.cols, drawing.rows, drawing.step, QImage::Format_RGB888)
+             .scaled(256, 190, Qt::KeepAspectRatio)));
+    scene->addItem(item);
+
+    ui->PgraphicsViewEdge->show();
+
+
+   // add all points to one vector
+    for (int i=0; i < contours.size(); i++) {
+        allPoints.insert(allPoints.end(), contours[i].begin(), contours[i].end());
+    }
+
+
+     /// Show in a window
+//     cv::namedWindow( "Contours", CV_WINDOW_AUTOSIZE );
+//     cv::imshow( "Contours", drawing );
+
+//    ui->image_lbl->setPixmap(QPixmap::fromImage(QImage(image.data, image.cols, image.rows, image.step, QImage::Format_RGB888)));
+//    cv::namedWindow("Tulips");
+//    cv::imshow("Tulips", image);
+//    cv::waitKey(1000);
+
+    countFourierDescriptors(allPoints);
+}
+
+void MainWindow::countFourierDescriptors (std::vector<cv::Point> allPoints) {
+
+//     std::vector<float> descriptors;
+    std::vector<std::complex<float>> szeregWspolrzednych;
+    std::complex<float> j = (0.0f, 1.0f);
+    std::vector<std::complex<float>> descriptors;
+    float PI = 3.141592653589793;
+    for (int i =0;i< allPoints.size(); i++) {
+        cv::Point point = allPoints[i];
+        std::complex<float> s = (point.x * 1.0f, 1.0f) + (1.0f, point.y * 1.0f);
+        szeregWspolrzednych.push_back(s);
+        cout << szeregWspolrzednych[i] << " " << s << " " << point.x << " " << point.y << endl;
+    }
+
+    int N = szeregWspolrzednych.size();
+    for (int u = 0; u < N; u++) {
+        std::complex<float> uu = (0.0, 0.0);
+        for (int k = 0; k < N; k++) {
+           uu += szeregWspolrzednych[k] * exp((-j * PI * (2.f * u * k))/(N * 1.f));
+        }
+        descriptors.push_back(uu/(N * 1.f));
+        cout << descriptors[u].real() << endl;
+    }
+    cout << "descriptors " << descriptors.size() << endl;
+
+}

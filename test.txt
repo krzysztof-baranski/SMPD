@@ -1,0 +1,9 @@
+3, 0, 1, 2
+Acer Campestre,1,-1,2
+Acer Campestre, 1,0,1
+Acer Saccharinum,2,-1,1
+Acer Saccharinum,1,-1,2
+Quercus Afares,1,1,2
+Quercus Afares,1,1,3
+Quercus Afares,2,2,1
+Quercus Afares,2,1,2
