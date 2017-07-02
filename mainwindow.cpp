@@ -19,7 +19,7 @@ vector<Object> testSet;
 vector<int> maxFLDPoint;
 vector<int> tmpMaxFLDPoint;
 map<string, vector<float>> classFouriersMap;
-vector<float> fd; // descriptors
+vector<float> fd; // Fourier descriptors
 QString filename="Oak_Maple2.txt";
 QFile file( filename );
 
@@ -218,7 +218,7 @@ float MainWindow::calculateFisher() {
         }
 
     }
-//    ui->FStextBrowserDatabaseInfo->append("max_ind: " + QString::number(max_ind) + " " + QString::number(FLD));
+    ui->FStextBrowserDatabaseInfo->append("max_ind: " + QString::number(max_ind) + " " + QString::number(FLD));
     return max_ind;
 }
 float MainWindow::calculateSFS(map<string, bnu::matrix<float>>& XiMi, map<string, bnu::matrix<float>>& averages , int rowNumber){
@@ -668,13 +668,11 @@ void MainWindow::on_pushButton_3_clicked()
     dirList = dir.entryList();
     QList<QFileInfo> fileList;
     for(int i=2; i< dirList.size();i++) {
-//        cout << i << " " << dirList[i].toStdString() << endl;
         if (!dir.cd(dirList[i])) {
             cout << "Cannot find " << dirList[i].toStdString() << endl;
         } else {
             QDir dir2(dir.absolutePath());
             dir2.setNameFilters(QStringList()<<"*.jpg");
-            //cout << dir.absolutePath().toStdString() << "/" + dirList[i].toStdString() << endl;
 
             fileList.append(dir2.entryInfoList());
         }
@@ -732,7 +730,6 @@ void MainWindow::on_pushButton_3_clicked()
            cv::Scalar color = cv::Scalar(0, 0, 255);
            // image, contours, contourIdx, color, thickness, lineType, hierarchy, maxLevel, offset
            cv::drawContours( drawing, contours, i, color, 1, 8, hierarchy, 0, cv::Point() );
-          // cout << "contours: " << contours[i]<< endl;
         }
 
         scene = new QGraphicsScene();
@@ -787,16 +784,13 @@ void MainWindow::on_pushButton_3_clicked()
 
 vector<float> MainWindow::countFourierDescriptors (std::vector<cv::Point> allPoints, std::string path) {
 
-//     std::vector<float> descriptors;
     std::vector<std::complex<float>> szeregWspolrzednych;
     std::complex<float> j(0, 1);
     std::vector<float> descriptors;
     float PI = 3.141592653589793;
     int interval = round(allPoints.size()/64.f);
-    float dupa = allPoints.size()/64.f;
-    cout << allPoints.size() << " " << allPoints.size()/64 << " flo " << dupa << endl;;
-    cout << "interval " << interval << endl;
-    for (int i = 0; /*i< allPoints.size() &&*/ szeregWspolrzednych.size() < 64; i+=interval) {
+
+    for (int i = 0; szeregWspolrzednych.size() < 64; i+=interval) {
         cv::Point point = allPoints[i];
         std::complex<float> s(point.x * 1.0f, point.y * 1.0f);
         szeregWspolrzednych.push_back(s);
